@@ -1,2 +1,2 @@
 An EDA was performed and a lasso regression model was constructed in attempt to address multicolinearity. The code was written in RStudio version 2023.06.2+561.
-Recommendations: Inclusion of other predictors, such as laboratory data. A similar analysis can be done uskng UK BioBank, which also includes dietary recall and other data on genetic, environmental, and medical conditions from participants. It may account for what NHANES is missing.
+Recommendations: Inclusion of other predictors, such as laboratory data. A similar analysis can be done using UK BioBank, which includes dietary recall and other data on genetic, environmental, and medical conditions from participants. It may account for what NHANES is missing.

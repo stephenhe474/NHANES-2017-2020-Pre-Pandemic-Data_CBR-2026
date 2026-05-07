@@ -1,7 +1,9 @@
 **Description and Review of Analysis**
 
 An EDA was performed and a lasso regression model was constructed in attempt to address multicolinearity. The code was written in RStudio version 2023.06.2+561. No correlation is established between macronutrient intake from the dietary interview and the depression scores from the PHQ-9 screener.
-Recommendations: Inclusion of other predictors, such as laboratory data. A similar analysis can be done using UK BioBank, which includes dietary recall and other data on genetic, environmental, and medical conditions from participants. It may account for what NHANES is missing. Please note that this analysis was approached unconventionally, as data sets from NHANES are manipulated and assessed for different purposes. The relationship between diet quality, mood, and mental health status is evident from scientific literature. However, it is of interest to assess if the same connection can be observed with a psychiatric tool. 
+Recommendations: Inclusion of other predictors, such as laboratory data. A similar analysis can be done using UK BioBank, which includes dietary recall and other data on genetic, environmental, and medical conditions from participants. It may account for what NHANES is missing. 
+
+Please note that this analysis was approached unconventionally, as data sets from NHANES are manipulated and assessed for different purposes. The relationship between diet quality, mood, and mental health status is evident from scientific literature. However, it is of interest to assess if the same connection can be observed with a psychiatric tool. 
 
 The code was also contributed by my supervisor, David Riegert, of Trent University. Google Gemini was used for some visualizations and outputs for the LASSO model (this is specified by in-line comments). 
 Further inquries and comments about the code and analysis can be sent to my email. Any pull requests will be considered and documented, but would not be accepted as the original contents of the code is to be kept for viewing. The analysis was conducted for Canadian Family Health Counselling as a community-based research project.

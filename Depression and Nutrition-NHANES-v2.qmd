@@ -1,0 +1,525 @@
+---
+title: "Depression and Nutrition - NHANES"
+author: "Stephen He"
+format: pdf
+editor: visual
+---
+
+The document uses and presents open-access data from the National Health and Nutrition Examination Survey (NHANES) from CDC's National Center for Health Statistics. It a source for reviewing and analyzing statistics on population health through national population surveys conducted from 1990 to the present day in the United States.
+
+For the purpose of this research project, we are interested in the data from the Mental Health- Depression Screener, stored in the Questionnaire Data from each NHANES study period. We are also interested in the data containing the food codes and the diet overview (macronutrients and micronutrients consumed) from the Dietary Data. The information is collected from the NHANES March 2017-2020 study period, before the COVID-19 pandemic. This is the most recent data that has been completed.
+
+Although the survey does not emphasize psychological well-being beyond states of depression, many data concerning mood and nutrition are restricted from public access, especially those that come from clinical or metabolic cohort studies, which provides greater depth in diet and its impact on behaviour.
+
+I would like to thank David Riegert for his commitment, guidance, and tireless support. He has also contributed to many parts of analysis, especially the organization of the depression scores and ensuring that all the participants that were recorded in the three data files were correctly placed into one dataframe.
+
+## Loading In Datasets
+
+```{r}
+#| label: load_and_view_data
+library(haven)
+library(tidyverse)
+library(janitor)
+library(GGally)
+library(MASS)
+library(broom)
+library(randomForest)
+library(caret)
+library(ggfortify)
+
+dietary_interview_first24 <- read_xpt("P_DR1IFF.xpt")
+dietary_interview_first24 |> glimpse()
+
+#food_codes <- read_xpt("P_DRXFCD.xpt")
+#food_codes |> glimpse()
+
+demographic <- read_xpt("P_DEMO.xpt")
+demographic |> glimpse()
+
+depression <- read_xpt("P_DPQ.xpt")
+depression
+```
+
+First, we can remove any variables that aren't relevant to the analysis (but still worth considering when interpreting and processing the results).We are primarily interested in the nutrient intake and the types of food consumed, and the psychological response to the diet choices, which are the moods related to depression.
+
+Additionally, the data from Food Interview of the Dietary Data and the Demographic Questionnaire will be subsetted to participants who were 18 years and older during the time of screening. This is crucial as the Mental Health- Depression Screener only consists of adult participants. Thus, the analysis of this project represents adult participants from the United States who volunteered to take part of the NHANES study during March of 2017 to 2020.
+
+```{r}
+#| label: clean_and_subset_data
+
+dietary_interview_first24_subset <- subset(dietary_interview_first24,
+                                           select = c(-WTDR2DPP, -DR1EXMER, -DR1DRSTZ, -DR1EXMER, -DRABF, -DR1DBIH, -DR1DAY, -DR1LANG, -DR1_030Z, -DR1FS, -DR1_040Z))
+
+dietary_interview_first24_subset
+
+demographic_age <- demographic |> dplyr::select(SEQN, RIDAGEYR)
+demographic_age
+
+age_diet_interview <- left_join(dietary_interview_first24_subset, demographic_age, by = "SEQN")
+
+age_diet_interview_adults <- age_diet_interview |> filter(RIDAGEYR >= 18)
+age_diet_interview_adults
+```
+
+We will also remove any variables from the demographic questionnaire that are not relevant to the analysis.
+
+```{r}
+#| label: Subsetting_demogrpahic_data
+demographic_subset <- subset(demographic, select = c(-SDDSRVYR, -RIDSTATR, -RIDAGEMN, -RIDRETH1, -RIDRETH3, -RIDEXMON, -DMDBORN4, -DMDYRUSZ, -DMDEDUC2, -RIDEXPRG, -SIALANG, -SIAPROXY, -SIAINTRP, -FIALANG, -FIAPROXY, -FIAINTRP, -MIALANG, -MIAPROXY, -MIAINTRP, -AIALANGA))
+```
+
+In the Mental Health- Depression Screener, we need to observe the number of missing values for each of the 10 questions.
+
+```{r}
+depression |> 
+  map(~ .x |> is.na() |> sum()) |> 
+  unlist() |> 
+  enframe(name = "Variable", value = "Number NA") |> 
+  mutate(
+    `Proportion Missing` = `Number NA` / 8965
+  ) |> 
+  adorn_rounding(3)
+```
+
+Now, we can clear the N/A values.
+
+```{r}
+#| label: Removing_missing_values
+demographic_clean <- demographic_subset |> na.omit()
+depression_clean <- depression |> na.omit()
+```
+
+Now, with the depression screener data, we can categorize ranges of the PHQ-9 scores into different levels of severity.
+
+```{r}
+#| label: Adding_new_column_that_represents_depression_severity_based_on_score_range
+depression_clean <- depression_clean  |> 
+  mutate(
+    total_phq9 = DPQ010 + DPQ020 + DPQ030 + DPQ040 +
+      DPQ050 + DPQ060 + DPQ070 + DPQ080 + DPQ090, 
+    depression_severity = case_when(
+      total_phq9 <= 4 ~ "None",
+      total_phq9 <= 9 ~ "Mild",
+      total_phq9 <= 14 ~ "Moderate",
+      total_phq9 <= 19 ~ "Moderately severe",
+      total_phq9 <= 27 ~ "Severe"
+    )
+  )
+depression_clean
+```
+
+We can then filter out any depression scores that aren't valid (they cannot be greater than 27). Then we will turn the `depression severity` column into an ordered factor so the categories can be sequenced from  "None" to "Severe".
+
+```{r}
+depression_clean <- depression_clean |> filter(total_phq9 <= 27) |> 
+  mutate(
+    depression_severity = fct(depression_severity, levels = c("None", "Mild", "Moderate", "Moderately severe", "Severe"))
+  )
+```
+
+We can plot the depression scores and severity categories from the PHQ-9 screener using histograms and bar plots. From here, we can simply capture the proportion of depression symptoms across the participants.
+
+```{r}
+#| label: Distribution_of_depression_scores_among_participants
+depression_clean |> 
+  ggplot(aes(x = total_phq9)) + 
+  geom_histogram(colour = "white", bins = 10) + 
+  labs(x = "Total Score", y = "Number of Participants", title = "Distribution of PHQ-9 Scores Among All Participants")
+#ggsave("PHQ9_distribution.png")
+```
+
+```{r}
+#| label: Proportion_of_depression_severities
+depression_clean |> 
+  ggplot(aes(x = depression_severity)) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) + labs(x = "Depression Severity",
+                                                                    y = "Number of Participants", title = "Proportion of Depression Severity")
+ggsave("Prop_depression.png")
+```
+There appears to be an overrepresentation of participants with a low or zero depression score. Is the PHQ-9 a reliable or accurate measure of depression? It is likely best for recording depressive symptoms, and not the best proxy for accounting for the nuance of mood.
+
+```{r}
+#Percentages_of_depression_severity
+depression_clean |> 
+  tabyl(depression_severity) |> 
+  adorn_rounding(3)
+#ggsave("Depression_severity_table.png")
+```
+Every participant has a distinct SEQN, and we will include all SEQNS that particpated in the diet interview into a dataframe that contains the macronutrients we are interested in.
+
+```{r}
+#| label: Combining_and_adding_SEQN_for_all_macronutrients
+
+#In this dataframe, we have all SEQNs that participated in the diet interview
+age_diet_adults_macro <- age_diet_interview_adults |> 
+  group_by(SEQN) |> 
+  summarize(
+    across(c(DR1IKCAL, DR1IFIBE, DR1ICHOL, DR1IPROT, DR1ICARB, ends_with("FAT")), sum)
+  )
+```
+
+Please take note that `DR1IKCAL` and `DR1ICHOL` was previously part of the analysis, but was decided to be removed. The focus would be on macronutrients alone.
+
+```{r}
+#| label: Distributions_of_macronutrient_consumption_among_participants
+age_diet_adults_macro |> dplyr::select(-DR1IKCAL, -DR1ICHOL) |>
+  pivot_longer(-SEQN) |> 
+  ggplot(aes(x = value)) + 
+  geom_histogram(colour = "white", bins = 20) + 
+  facet_wrap(~ name, scale = "free_x") + labs(x = "Amount of the Macronutrient Consumed (gm)", title = "Distributions of Macronutrient Consumption Among Participants")
+ 
+#ggsave("Macronutrient_historgrams.png")
+```
+
+It appears that most of the data lies to the right, violating normality and indicating right skews.
+
+## Combining PHQ-9, Dietary Data, and Demographic Data Together
+
+We can now add up all identical SEQN numbers and treat them as one person (since they are), and include all their macronutrient data together (since the interview represents one day of food intake). Then, we can include the cleaned depression screener and demographic data into `completed`.
+
+```{r}
+#| label: Grouping_all_SEQN_for_macronutrient_consumption_and_adding_depression_and_demographic_data
+completed <- age_diet_interview_adults |> 
+  group_by(SEQN) |> 
+  summarize(
+    across(c(DR1IKCAL, DR1IPROT, DR1ICARB, DR1IFIBE, DR1ICHOL, ends_with("FAT")), sum), 
+    .groups = "drop"
+  ) |> 
+  right_join(depression_clean, by = "SEQN") |> left_join(demographic_clean, by = "SEQN") |> mutate(RIAGENDR = factor(RIAGENDR, labels = c("Male", "Female"))) |> na.omit()
+```
+
+Gender, (`RIAGENDR`) is a discrete binary variable, 1 being Male, and 2 being Female. It is of interest to navigate how age, gender, and family income ratio to poverty appears in the analysis.
+
+```{r}
+#| warning = FALSE
+#|label: Proportions_of_depression_severities_among_male_and_female_participants_
+completed |> 
+  ggplot(aes(x = depression_severity, fill = factor(RIAGENDR))) + 
+  geom_bar(position = "dodge", aes(y = after_stat(prop), group = RIAGENDR)) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5), plot.axis = element_text(face = "bold", size = 14)) + labs(fill = "Gender") + labs(x = "Depression Severity for PHQ-9 Scores", y = "Proportion", title = "Proportions of Depression Severity") + scale_y_continuous(labels = scales::percent)
+
+#ggsave("Prop_of_depression_severities_with_gender.png")
+```
+We can visualize this right-skewed behaviour in each macronutrient, such as protein intake. 
+
+```{r}
+#| message: FALSE
+#| label: An_example_of_PHQ-9_scores_against_protein_consumption
+depression_mood <- lm(total_phq9 ~ DR1IPROT, data = completed)
+
+completed |> ggplot(aes(x = DR1IPROT, y = total_phq9)) + geom_jitter() + geom_smooth(method = "lm") + labs( x = "Protein Consumption (gm)", y = "Total PHQ-9 Score", title = "The Relationship Between Protein Consumption and Depression Scores") + theme(plot.title = element_text(face = "bold", size = 12), axis.title = element_text(size = 12))
+
+ggsave("Regression_prot_depression.png")
+```
+
+This behaviour is almost identical to carbohydrate and fat consumption, revealing a strong right skewness.
+
+```{r}
+#| label: Boxplots_representing_the_distribution_of_each_macronutrient_
+#| intake_for_every_depression_severity
+completed |> dplyr::select(depression_severity, starts_with("DR1I"), -DR1ICHOL) |> 
+  pivot_longer(-depression_severity) |> 
+  ggplot(aes(x = depression_severity, y = value)) + 
+  geom_boxplot() + 
+  geom_jitter(width = 0.1, alpha = 0.3) + 
+  facet_wrap(~ name, scale = "free_y")
+#ggsave("boxplots")
+```
+
+```{r}
+#| warning: false
+#| label: EXAMPLE:_closer_look_at_a_boxplot_for_depression_&_total_fat
+completed |> na.omit() |> ggplot(aes(x = DR1ITFAT, y = depression_severity)) + geom_boxplot() + geom_jitter(height = 0.1) 
+```
+
+```{r}
+# Dave_wanted_to_check_for_NA_values_here
+completed |> map(~ .x |> is.na() |> sum()) |> 
+  unlist() |> 
+  enframe()
+```
+
+## ggpairs() for Depression Scores, Demographic, and Macronutrients
+
+```{r}
+#| warning: FALSE
+#| message: FALSE
+completed |> ggpairs(columns = c("total_phq9", "DR1IKCAL", "DR1IPROT", "DR1ICARB"))
+```
+The correlation is highest between energy, carbohydrates, and protein as these variables are known to be related to each other. We can continue to see these signs of multicolinearity with the following `ggpairs()` below. Note that the inclusion of demographic variables were based on additional interests during the experiment and not the focus of the analysis.
+
+```{r}
+#| warning: false
+#| message: false
+#|label: ggpairs()_plot_to_assess_correlation_coefficients_of_macronutrients_and_PHQ-9
+completed |> dplyr::select(total_phq9, starts_with("DR1I")) |> dplyr::select(-DR1ISFAT, -DR1IMFAT, -DR1IPFAT, -DR1ICHOL)  |>  ggpairs()
+```
+
+```{r}
+#| warning: false
+#| message: false
+#|label: ggpairs()_plot_to_assess_correlation_coefficients_of_fats_and_PHQ-9
+completed |> dplyr::select(total_phq9, ends_with("FAT")) |> ggpairs()
+```
+
+```{r}
+#| warning: false
+#| message: false
+completed |> dplyr::select(total_phq9, ends_with("FAT"), RIAGENDR, RIDAGEYR,INDFMPIR) |> ggpairs(aes(color = RIAGENDR, alpha = 0.4))
+ggsave("DEMO_PHQ_FATS.png")
+```
+
+```{r}
+#| warning: false
+#| message: false
+completed |> ggpairs(columns = c("total_phq9", "DR1IPROT", "DR1ICARB", "RIDAGEYR", "DR1IFIBE", "INDFMPIR", "RIAGENDR"), aes(color = RIAGENDR, alpha = 0.4)) 
+ggsave("DEMO_PHQ_OTHERMACRONUT.png")
+```
+
+```{r}
+#| warning: false
+#| message: false
+completed |> ggpairs(columns = c("total_phq9", "INDFMPIR", "RIAGENDR"), aes(color = RIAGENDR, alpha = 0.4))
+```
+
+```{r}
+#| label: Distribution_of_age_among_all_participants
+completed |> 
+  ggplot(aes(RIDAGEYR)) + geom_histogram(colour = "white", bins = 15) +
+  labs(x = "Age in Years", y = "Number of Participants", title = "Distribution of Age Among All Participants")
+
+```
+
+```{r}
+#| label: Distribution_of_family-income-to-poverty-ratio_among_all_participants
+completed |> ggplot(aes(INDFMPIR)) + geom_histogram(colour = "white", bins = 15) + labs(x = "Income-to-Poverty Ratio", y = "Number of Particpants", title = "Distribution of Family Income to Poverty Ratios")
+```
+Interestingly, a large portion of the participants are well above the poverty threshold, with a low number of participants sitting at or below the poverty thereshold. There seems to be emphasis on individuals  
+
+## Lasso Regression Model
+
+### Producing Additive Model of all Variables
+
+```{r}
+completed_sub <- completed |> dplyr::select(total_phq9, starts_with("DR1I"), RIDAGEYR, INDFMPIR, RIAGENDR, -DR1IKCAL)
+mod <- completed_sub |> lm(total_phq9 ~ ., data = _)
+
+summary(mod)
+```
+
+```{r}
+#interaction_mod <- completed_sub |> lm(total_phq9 ~ DR1IFIBE * INDFMPIR * DR1IPFAT * DR1IMFAT, data = _)
+#summary(interaction_mod)
+
+#Interaction terms are incuded in step_interact() from the recipe() package.
+```
+
+```{r}
+#| warning: FALSE
+#| message: FALSE
+set.seed(88114)
+library(glmnet)
+library(rsample)
+library(recipes)
+library(parsnip)
+library(workflows)
+library(dials)
+library(tune)
+
+
+#Splitting testing and training data
+data_split <- initial_split(completed_sub, prop = 0.70, strata = "total_phq9")
+
+train <- training(data_split)
+test <- testing(data_split)
+
+#K-fold cross validation, randomly splits data in 10 groups
+folds <- vfold_cv(train, v = 10, strata = total_phq9)
+
+lasso_recipe <- recipe(total_phq9 ~ ., data = train) |>
+  step_rm(RIAGENDR) |>
+  step_interact(terms = ~ (DR1IFIBE + INDFMPIR + DR1ITFAT + DR1IMFAT + DR1ICARB)^2) |>
+  step_novel(all_nominal_predictors()) |> # This line is from Google GEMINI
+  step_dummy(all_nominal_predictors()) |> # Convert charactesr or factors into binary
+  step_zv(all_predictors())            |> # Removes variables that only have one single value, those with no variance
+  step_normalize(all_numeric_predictors()) # cnter and scale numeric variables for Lasso
+
+#Constructing lasso model with a selection penality, tuning to find the best value for predictions
+lasso_model <- linear_reg(penalty = tune(), mixture = 1) |> set_engine("glmnet")
+
+# Putting the lasso model into a workflow()
+lasso_wf <- workflow() |> add_recipe(lasso_recipe) |> add_model(lasso_model)
+
+#A grid is made to list a set if penalty values that would be the most optimal for variable selection
+lasso_grid <- tibble(penalty = 10^seq(-4,-1, length.out = 30))
+
+lasso_grid |> top_n(-5)
+lasso_grid |> top_n(5)
+
+lasso_tune_results <- tune_grid(
+  lasso_wf,
+  resamples = folds,
+  grid = lasso_grid, control = control_grid(save_pred = TRUE))
+#The 30 penalized regression models are trained using tune_grid()
+
+
+# Visualise the performance across different penalty values
+autoplot(lasso_tune_results)
+
+# The lines below and to the end of this chunk are from Google GEMINI
+
+# Extract the numerically best penalty
+best_penalty_term <- select_by_one_std_err(lasso_tune_results, metric = "rmse", -penalty)
+
+# Update the workflow with the best penalty
+final_lasso_wf <- finalize_workflow(lasso_wf, best_penalty_term)
+
+# Fit to training data and evaluate on test data in one step
+final_fit <- last_fit(final_lasso_wf, data_split)
+
+collect_metrics(final_fit)
+
+extract_fit_parsnip(final_fit) |> tidy()
+
+```
+
+```{r}
+#| message: FALSE
+#| warning: FALSE
+#| label: A_different_approach_using_proportions_of_nutrients
+library(survey)
+completed_adjusted <- completed |>
+   mutate( adjusted_PROT = (DR1IPROT *4)/ DR1IKCAL *100,
+           adjusted_CARB = (DR1ICARB *4)/ DR1IKCAL *100,
+           adjusted_TFAT = (DR1ITFAT *9)/ DR1IKCAL *100) |> filter(!is.na(WTMECPRP))
+ 
+nhanes_design <- svydesign(ids = ~SDMVPSU, strata = ~SDMVSTRA,
+                            weights = ~WTMECPRP, data = completed_adjusted,
+                            nest = TRUE)
+ 
+adjusted_model <- svyglm(
+   total_phq9 ~ adjusted_CARB + adjusted_TFAT + RIAGENDR + RIDAGEYR + INDFMPIR, 
+   design = nhanes_design, family = quasipoisson())
+ 
+summary(adjusted_model)
+
+```
+
+```{r}
+adjust_data_split <- initial_split(completed_sub, prop = 0.70, strata = "total_phq9")
+
+adjust_train <- training(adjust_data_split)
+adjust_test <- testing(adjust_data_split)
+
+#K-fold cross validation, randomly splits data in 10 groups
+adjust_folds <- vfold_cv(adjust_train, v = 10, strata = total_phq9)
+
+adjust_lasso_recipe <- recipe(total_phq9 ~ ., data = adjust_train) |>
+  step_novel(all_nominal_predictors()) |> # This line is from Google GEMINI
+  step_interact(terms = ~ (DR1IFIBE + INDFMPIR + DR1ITFAT + DR1IMFAT + DR1ICARB)^2) |>
+  step_rm(RIAGENDR) |>
+  step_dummy(all_nominal_predictors()) |> # Convert charactesr or factors into binary
+  step_zv(all_predictors())            |> # Removes variables that only have one single value, those with no variance
+  step_normalize(all_numeric_predictors()) # cnter and scale numeric variables for Lasso
+
+#Constructing lasso model with a selection penality, tuning to find the best value for predictions
+adjust_lasso_model <- linear_reg(penalty = tune(), mixture = 1) |> set_engine("glmnet")
+
+# Putting the lasso model into a workflow()
+adjust_lasso_wf <- workflow() |> add_recipe(adjust_lasso_recipe) |> add_model(adjust_lasso_model)
+
+#A grid is made to list a set if penalty values that would be the most optimal for variable selection
+adjust_lasso_grid <- tibble(penalty = 10^seq(-4,-1, length.out = 30))
+
+adjust_lasso_grid |> top_n(-5)
+adjust_lasso_grid |> top_n(5)
+
+adjust_lasso_tune_results <- tune_grid(
+  adjust_lasso_wf,
+  resamples = folds,
+  grid = adjust_lasso_grid, control = control_grid(save_pred = TRUE))
+#The 30 penalized regression models are trained using tune_grid()
+
+
+# Visualise the performance across different penalty values
+autoplot(adjust_lasso_tune_results)
+
+# The lines below and to the end of this chunk are from Google GEMINI
+
+# Extract the best penalty
+adjust_best_penalty_term <- select_by_one_std_err(adjust_lasso_tune_results, metric = "rmse", -penalty)
+
+# Update the workflow with the best penalty
+adjust_final_lasso_wf <- finalize_workflow(adjust_lasso_wf, adjust_best_penalty_term)
+
+# Fit to training data and evaluate on test data in one step
+adjust_final_fit <- last_fit(adjust_final_lasso_wf, adjust_data_split)
+
+collect_metrics(adjust_final_fit)
+
+extract_fit_parsnip(adjust_final_fit) |> tidy()
+```
+
+```{r}
+autoplot(adjust_lasso_tune_results)
+#ggsave("RMSE_rsq_adjust_lower_penalty.png")
+```
+
+```{r}
+mod |> broom::tidy() |> 
+  janitor::adorn_rounding(6) |> 
+  filter(p.value < 0.1)
+```
+
+```{r}
+completed_sub_scale <- completed_sub |> mutate(RIAGENDR = as.numeric(as.factor(RIAGENDR))) |> scale() |> as.data.frame()
+
+#completed_sub_scale |> map(~ .x |> sum()) |> unlist()
+
+mod2 <- lm(total_phq9 ~ ., data = completed_sub_scale)
+mod2 |> broom::tidy() |> 
+  janitor::adorn_rounding(6) 
+```
+
+```{r}
+mod2 |> autoplot()
+```
+
+```{r}
+mod2 |> augment() |> dplyr::select(.resid) |> 
+  ggplot(aes(x = .resid)) +
+  geom_histogram(colour = "white", bins = 20)
+```
+
+```{r}
+#| label: Residuals_vs_predictors_of_macronutrients_and_some_demo
+#| message: FALSE
+mod2 |> augment() |> dplyr::select(total_phq9:.resid, -.fitted,
+                                   -RIAGENDR, -DR1ICHOL, -total_phq9) |> 
+  pivot_longer(-.resid) |> filter(name != "DR1IKCAL") |>
+  ggplot(aes(x = value, y = .resid)) + 
+  geom_point() + 
+  geom_smooth() + 
+  facet_wrap(~ name, scale = "free_x")
+#?ggsave("regression_ofallmacro.png")
+```
+
+```{r}
+#| label: Boxplots_of_age_and_family-income-to-poverty-ratio_relative_to_depression
+completed |> dplyr::select(depression_severity, INDFMPIR, RIDAGEYR) |> 
+  pivot_longer(-depression_severity) |> 
+  ggplot(aes(x = depression_severity, y = value)) + 
+  geom_boxplot() + 
+  geom_jitter(width = 0.1, alpha = 0.3) + 
+  facet_wrap(~ name, scale = "free_y")
+```
+
+## REFERENCES
+
+tidymodels.(n.d.).A predictive modeling case study.
+https://www.tidymodels.org/start/case-study/#:\~:text=For%20this%20case%20study%2C%20rather,split%20creates%20two%20new%20datasets:
+
+DataCamp. (n.d.). svyglm: Survey-weighted generalised linear models.https://www.rdocumentation.org/packages/survey/versions/4.5/topics/svyglm
+
+https://www.rdocumentation.org/packages/survey/versions/4.5/topics/svydesign
